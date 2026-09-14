@@ -1,1 +1,63 @@
+name: Hunt Oracle ARM Instance
 
+on:
+  schedule:
+    # Tự động chạy mỗi 15 phút
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  apply-stack:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install OCI CLI
+        run: |
+          bash -c "$(curl -L https://raw.githubusercontent.com/oracle/oci-cli/master/scripts/install/install.sh)" -- --accept-all-defaults
+          echo "$HOME/bin" >> $GITHUB_PATH
+
+      - name: Configure OCI CLI
+        run: |
+          mkdir -p ~/.oci
+          echo "${{ secrets.OCI_CONFIG }}" > ~/.oci/config
+          echo "${{ secrets.OCI_KEY }}" > ~/.oci/oci_api_key.pem
+          chmod 600 ~/.oci/oci_api_key.pem
+
+      - name: Apply Stack & Notify
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Gửi yêu cầu Apply Stack..."
+          JOB_ID=$(oci resource-manager job create-apply-job \
+            --stack-id "${{ secrets.STACK_ID }}" \
+            --execution-plan-strategy AUTO_APPROVED \
+            --query 'data.id' --raw-output 2>/dev/null || true)
+          
+          if [ -z "$JOB_ID" ]; then
+            echo "Chưa tạo được job (có thể bị trùng job cũ đang chạy)."
+            exit 0
+          fi
+
+          echo "Đã tạo Job: $JOB_ID. Chờ kiểm tra kết quả..."
+          
+          for i in {1..15}; do
+            sleep 20
+            STATUS=$(oci resource-manager job get --job-id "$JOB_ID" --query 'data."lifecycle-state"' --raw-output 2>/dev/null || true)
+            echo "Trạng thái hiện tại: $STATUS"
+
+            if [ "$STATUS" = "SUCCEEDED" ]; then
+              MSG="🎉 VPS Oracle ARM Singapore đã tạo THÀNH CÔNG! Workflow đã tự tắt."
+              curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_TOKEN }}/sendMessage" \
+                -d "chat_id=${{ secrets.TELEGRAM_CHAT_ID }}&text=$MSG"
+              
+              # Tự động vô hiệu hóa workflow để dừng săn
+              gh workflow disable apply.yml || true
+              exit 0
+            elif [ "$STATUS" = "FAILED" ]; then
+              echo "Vẫn hết slot (Out of capacity). Lần sau thử tiếp."
+              exit 0
+            fi
+          done
