@@ -2,7 +2,6 @@ name: Hunt Oracle ARM Instance
 
 on:
   schedule:
-    # Tự động chạy mỗi 15 phút
     - cron: '*/15 * * * *'
   workflow_dispatch:
 
@@ -53,7 +52,6 @@ jobs:
 
           echo "Đã tạo Job: $JOB_ID. Đang chờ kết quả..."
 
-          # Kiểm tra trạng thái Job (tối đa 5 phút)
           for i in {1..15}; do
             sleep 20
             STATUS=$(oci resource-manager job get --job-id "$JOB_ID" --query 'data."lifecycle-state"' --raw-output 2>/dev/null || true)
@@ -75,4 +73,4 @@ jobs:
         if: failure()
         run: |
           curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_TOKEN }}/sendMessage" \
-            -d "chat_id=${{ secrets.TELEGRAM_CHAT_ID }}&text=🚨 <b>[Oracle Hunt] LỖI WORKFLOW!</b>%0AQuá trình chạy trên GitHub Actions gặp sự cố bất thường (lỗi cài CLI hoặc lỗi mạng).&parse_mode=HTML" > /dev/null
+            -d "chat_id=${{ secrets.TELEGRAM_CHAT_ID }}&text=🚨 <b>[Oracle Hunt] LỖI WORKFLOW!</b>%0AQuá trình chạy trên GitHub Actions gặp sự cố bất thường.&parse_mode=HTML" > /dev/null
