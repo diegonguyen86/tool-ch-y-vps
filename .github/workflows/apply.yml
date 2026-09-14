@@ -2,6 +2,7 @@ name: Hunt Oracle ARM Instance
 
 on:
   schedule:
+    # Tự động chạy mỗi 15 phút
     - cron: '*/15 * * * *'
   workflow_dispatch:
 
@@ -23,6 +24,7 @@ jobs:
           mkdir -p ~/.oci
           echo "${{ secrets.OCI_CONFIG }}" > ~/.oci/config
           echo "${{ secrets.OCI_KEY }}" > ~/.oci/oci_api_key.pem
+          chmod 600 ~/.oci/config
           chmod 600 ~/.oci/oci_api_key.pem
 
       - name: Apply Stack & Report to Telegram
@@ -30,47 +32,43 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BOT_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          OCI_CLI_SUPPRESS_FILE_PERMISSIONS_WARNING: "True"
         run: |
           send_tele() {
             local msg="$1"
             curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
-              -d "chat_id=${CHAT_ID}&text=${msg}&parse_mode=HTML" > /dev/null
+              -d "chat_id=${CHAT_ID}" \
+              --data-urlencode "text=${msg}"
           }
 
           echo "Gửi yêu cầu Apply Stack..."
-          JOB_RAW=$(oci resource-manager job create-apply-job \
+          JOB_ID=$(oci resource-manager job create-apply-job \
             --stack-id "${{ secrets.STACK_ID }}" \
-            --execution-plan-strategy AUTO_APPROVED 2>&1 || true)
+            --execution-plan-strategy AUTO_APPROVED \
+            --query 'data.id' --raw-output 2>/dev/null || true)
 
-          JOB_ID=$(echo "$JOB_RAW" | jq -r '.data.id // empty' 2>/dev/null || true)
-
-          if [ -z "$JOB_ID" ]; then
-            echo "Lỗi gửi lệnh hoặc trùng Job: $JOB_RAW"
-            send_tele "⚠️ <b>[Oracle Hunt] Gặp sự cố khi gửi Job!</b>%0ANội dung: Job trước chưa chạy xong hoặc lỗi xác thực API."
+          if [ -z "$JOB_ID" ] || [ "$JOB_ID" = "null" ]; then
+            echo "Chưa tạo được job hoặc đang trùng job cũ."
+            send_tele "⚠️ [Oracle Hunt] Gặp sự cố gửi Job: Có thể Job trước đó chưa chạy xong. Đợi 15 phút sau thử lại."
             exit 0
           fi
 
-          echo "Đã tạo Job: $JOB_ID. Đang chờ kết quả..."
-
+          echo "Đã tạo Job: $JOB_ID. Bắt đầu chờ kết quả..."
+          
+          # Theo dõi Job tối đa 5 phút
           for i in {1..15}; do
             sleep 20
             STATUS=$(oci resource-manager job get --job-id "$JOB_ID" --query 'data."lifecycle-state"' --raw-output 2>/dev/null || true)
             echo "Lần $i: Trạng thái = $STATUS"
 
             if [ "$STATUS" = "SUCCEEDED" ]; then
-              send_tele "🎉🎉🎉 <b>[Oracle Hunt] TẠO VPS THÀNH CÔNG!</b>%0AĐã săn được slot ARM Singapore (4 Core / 24GB RAM).%0AWorkflow đã tự động TẮT để tránh tạo thừa."
+              send_tele "🎉 TẠO VPS THÀNH CÔNG! Đã săn được slot ARM Singapore (4 Core / 24GB RAM). Workflow đã tự tắt!"
               gh workflow disable apply.yml || true
               exit 0
             elif [ "$STATUS" = "FAILED" ]; then
-              send_tele "⏳ <b>[Oracle Hunt] Kết quả lần chạy:</b>%0AVẫn hết tài nguyên (Out of capacity). Đang chờ 15 phút sau thử lại..."
+              send_tele "⏳ [Oracle Hunt] Kết quả: Vẫn hết tài nguyên (Out of capacity). Sẽ tự thử lại sau 15 phút."
               exit 0
             fi
           done
 
-          send_tele "⏱️ <b>[Oracle Hunt] Cảnh báo:</b> Job $JOB_ID chạy quá 5 phút chưa kết thúc. Sẽ kiểm tra lại ở lượt tiếp theo."
-
-      - name: Notify on System Failure
-        if: failure()
-        run: |
-          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_TOKEN }}/sendMessage" \
-            -d "chat_id=${{ secrets.TELEGRAM_CHAT_ID }}&text=🚨 <b>[Oracle Hunt] LỖI WORKFLOW!</b>%0AQuá trình chạy trên GitHub Actions gặp sự cố bất thường.&parse_mode=HTML" > /dev/null
+          send_tele "⏱️ [Oracle Hunt] Job $JOB_ID đang xử lý lâu hơn 5 phút. Sẽ tiếp tục kiểm tra ở lần chạy sau."
