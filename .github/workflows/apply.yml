@@ -3,7 +3,7 @@ name: Hunt Oracle ARM Instance
 on:
   schedule:
     # Tự động chạy mỗi 15 phút
-    - cron: '*/15 * * * *'
+    - cron: '*/5 * * * *'
   workflow_dispatch:
 
 permissions:
