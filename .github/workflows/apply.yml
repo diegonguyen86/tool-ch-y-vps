@@ -2,13 +2,12 @@ name: Hunt Oracle ARM Instance
 
 on:
   schedule:
-    # Tự động chạy mỗi 15 phút
-    - cron: '*/5 * * * *'
+    - cron: '0 * * * *' # Backup kích hoạt mỗi tiếng 1 lần nếu lỡ bị ngắt
   workflow_dispatch:
 
 permissions:
   actions: write
-  contents: read
+  contents: write
 
 jobs:
   apply-stack:
@@ -27,7 +26,7 @@ jobs:
           chmod 600 ~/.oci/config
           chmod 600 ~/.oci/oci_api_key.pem
 
-      - name: Apply Stack & Report to Telegram
+      - name: Hunt Loop 50 Minutes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BOT_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
@@ -38,37 +37,44 @@ jobs:
             local msg="$1"
             curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
               -d "chat_id=${CHAT_ID}" \
-              --data-urlencode "text=${msg}"
+              --data-urlencode "text=${msg}" > /dev/null
           }
 
-          echo "Gửi yêu cầu Apply Stack..."
-          JOB_ID=$(oci resource-manager job create-apply-job \
-            --stack-id "${{ secrets.STACK_ID }}" \
-            --execution-plan-strategy AUTO_APPROVED \
-            --query 'data.id' --raw-output 2>/dev/null || true)
+          send_tele "🚀 [Oracle Hunt] Đợt săn mới bắt đầu (chạy liên tục 50 phút, 60s/lần)..."
 
-          if [ -z "$JOB_ID" ] || [ "$JOB_ID" = "null" ]; then
-            echo "Chưa tạo được job hoặc đang trùng job cũ."
-            send_tele "⚠️ [Oracle Hunt] Gặp sự cố gửi Job: Có thể Job trước đó chưa chạy xong. Đợi 15 phút sau thử lại."
-            exit 0
-          fi
+          START_TIME=$(date +%s)
+          # Chạy vòng lặp trong vòng 50 phút (3000 giây)
+          while [ $(( $(date +%s) - START_TIME )) -lt 3000 ]; do
+            echo "--- [$(date '+%H:%M:%S')] Gửi yêu cầu tạo máy ---"
+            
+            JOB_ID=$(oci resource-manager job create-apply-job \
+              --stack-id "${{ secrets.STACK_ID }}" \
+              --execution-plan-strategy AUTO_APPROVED \
+              --query 'data.id' --raw-output 2>/dev/null || true)
 
-          echo "Đã tạo Job: $JOB_ID. Bắt đầu chờ kết quả..."
-          
-          # Theo dõi Job tối đa 5 phút
-          for i in {1..15}; do
-            sleep 20
-            STATUS=$(oci resource-manager job get --job-id "$JOB_ID" --query 'data."lifecycle-state"' --raw-output 2>/dev/null || true)
-            echo "Lần $i: Trạng thái = $STATUS"
-
-            if [ "$STATUS" = "SUCCEEDED" ]; then
-              send_tele "🎉 TẠO VPS THÀNH CÔNG! Đã săn được slot ARM Singapore (4 Core / 24GB RAM). Workflow đã tự tắt!"
-              gh workflow disable apply.yml || true
-              exit 0
-            elif [ "$STATUS" = "FAILED" ]; then
-              send_tele "⏳ [Oracle Hunt] Kết quả: Vẫn hết tài nguyên (Out of capacity). Sẽ tự thử lại sau 15 phút."
-              exit 0
+            if [ -n "$JOB_ID" ] && [ "$JOB_ID" != "null" ]; then
+              echo "Đã gửi Job: $JOB_ID. Kiểm tra trạng thái..."
+              
+              # Chờ job chạy xong tối đa 3 phút
+              for i in {1..9}; do
+                sleep 20
+                STATUS=$(oci resource-manager job get --job-id "$JOB_ID" --query 'data."lifecycle-state"' --raw-output 2>/dev/null || true)
+                echo "Trạng thái: $STATUS"
+                
+                if [ "$STATUS" = "SUCCEEDED" ]; then
+                  send_tele "🎉🎉 TẠO VPS THÀNH CÔNG! Đã săn được ARM Singapore 4 Core / 24GB RAM. Đang tắt bot săn!"
+                  gh workflow disable apply.yml || true
+                  exit 0
+                elif [ "$STATUS" = "FAILED" ]; then
+                  break
+                fi
+              done
             fi
+
+            echo "Chưa có slot, nghỉ 60s trước khi thử tiếp..."
+            sleep 60
           done
 
-          send_tele "⏱️ [Oracle Hunt] Job $JOB_ID đang xử lý lâu hơn 5 phút. Sẽ tiếp tục kiểm tra ở lần chạy sau."
+          # Sau 50 phút, tự kích hoạt lại lượt tiếp theo
+          send_tele "🔄 [Oracle Hunt] Kết thúc phiên 50 phút (vẫn chưa có slot). Đang khởi động lại phiên mới..."
+          gh workflow run apply.yml || true
